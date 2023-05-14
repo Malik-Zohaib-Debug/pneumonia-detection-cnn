@@ -1,65 +1,71 @@
-import os
-import numpy as np
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout, Activation, Flatten, TimeDistributed, LSTM
-from tensorflow.keras.applications.vgg16 import preprocess_input
+# import necessary libraries
+from keras.preprocessing.image import ImageDataGenerator
+from keras.applications.vgg16 import VGG16
+from keras.layers import Dense, LSTM, Dropout, Flatten, Reshape
+from keras.models import Sequential
 
-# Define data directories
+# set up the data generators
 train_dir = 'X-ray Images/train'
+val_dir = 'X-ray Images/validation'
 test_dir = 'X-ray Images/test'
-
-# Set hyperparameters
-img_width, img_height = 550, 550
+img_height = 224
+img_width = 224
 batch_size = 32
-epochs = 10
 
-# Define data generators for preprocessing and data augmentation
-train_datagen = ImageDataGenerator(
-    preprocessing_function=preprocess_input,
-    rescale=1./255,
-    shear_range=0.2,
-    zoom_range=0.2,
-    horizontal_flip=True)
-test_datagen = ImageDataGenerator(
-    preprocessing_function=preprocess_input,
-    rescale=1./255)
+train_datagen = ImageDataGenerator(rescale=1./255)
+val_datagen = ImageDataGenerator(rescale=1./255)
+test_datagen = ImageDataGenerator(rescale=1./255)
 
-# Define generators for training and testing data
 train_generator = train_datagen.flow_from_directory(
     train_dir,
-    target_size=(img_width, img_height),
+    target_size=(img_height, img_width),
     batch_size=batch_size,
     class_mode='categorical')
+
+val_generator = val_datagen.flow_from_directory(
+    val_dir,
+    target_size=(img_height, img_width),
+    batch_size=batch_size,
+    class_mode='categorical')
+
 test_generator = test_datagen.flow_from_directory(
     test_dir,
-    target_size=(img_width, img_height),
+    target_size=(img_height, img_width),
     batch_size=batch_size,
     class_mode='categorical')
 
-# Define custom LSTM model
+# load the pre-trained VGG16 model and extract features from the images
+vgg_model = VGG16(weights='imagenet', include_top=False, input_shape=(img_height, img_width, 3))
+
+# freeze the layers in the VGG16 model
+for layer in vgg_model.layers:
+    layer.trainable = False
+
+# create the CNN-LSTM model
 model = Sequential()
-model.add(TimeDistributed(Conv2D(32, (3, 3), activation='relu'), input_shape=(None, img_width, img_height, 3)))
-model.add(TimeDistributed(MaxPooling2D(pool_size=(2, 2))))
-model.add(TimeDistributed(Conv2D(64, (3, 3), activation='relu')))
-model.add(TimeDistributed(MaxPooling2D(pool_size=(2, 2))))
-model.add(TimeDistributed(Conv2D(128, (3, 3), activation='relu')))
-model.add(TimeDistributed(MaxPooling2D(pool_size=(2, 2))))
-model.add(TimeDistributed(Flatten()))
-model.add(LSTM(128, return_sequences=True))
+model.add(vgg_model)
+model.add(Flatten())
+model.add(Reshape((1, -1)))
+model.add(LSTM(256, return_sequences=False))
 model.add(Dropout(0.5))
-model.add(LSTM(128))
 model.add(Dense(128, activation='relu'))
 model.add(Dropout(0.5))
-model.add(Dense(3, activation='softmax'))
+model.add(Dense(train_generator.num_classes, activation='softmax'))
 
-# Compile the model
-model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
+# compile the model
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
-# Train the model
-history = model.fit(train_generator, validation_data=test_generator, epochs=epochs)
+# train the model
+history = model.fit_generator(
+    train_generator,
+    steps_per_epoch=train_generator.n // batch_size,
+    epochs=10,
+    validation_data=val_generator,
+    validation_steps=val_generator.n // batch_size)
 
-# Evaluate the model
-score = model.evaluate(test_generator)
-print("Test loss:", score[0])
-print("Test accuracy:", score[1])
+# evaluate the model on the test data
+test_loss, test_acc = model.evaluate_generator(test_generator, steps=test_generator.n // batch_size)
+print('Test accuracy:', test_acc)
+
+# make predictions on new data
+predictions = model.predict_generator(test_generator, steps=test_generator.n // batch_size)
